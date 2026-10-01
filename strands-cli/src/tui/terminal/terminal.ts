@@ -10,9 +10,10 @@ const DISABLE_MOUSE = '\u001b[?1006l\u001b[?1003l\u001b[?1002l'
 const LEAVE_ALTERNATE_SCREEN = `${DISABLE_MOUSE}\u001b[?25h\u001b[?1049l\u001b[?25h`
 const SYNCHRONIZED_OUTPUT_START = '\u001b[?2026h'
 const SYNCHRONIZED_OUTPUT_END = '\u001b[?2026l'
+const CURSOR_HOME = '\u001b[H'
+const SHOW_CURSOR = '\u001b[?25h'
 const SAVE_CURSOR = '\u001b7'
 const RESTORE_CURSOR = '\u001b8'
-const CURSOR_HOME = '\u001b[H'
 
 export interface TerminalOutput {
   isTTY?: boolean
@@ -70,13 +71,18 @@ export function createInkOutputs(
         if (property === 'write') {
           return (chunk: unknown, ...args: unknown[]): unknown => {
             if (typeof chunk === 'string') {
+              let text = chunk
               if (stripSynchronization) {
-                chunk = chunk.replaceAll(SYNCHRONIZED_OUTPUT_START, '').replaceAll(SYNCHRONIZED_OUTPUT_END, '')
+                text = text.replaceAll(SYNCHRONIZED_OUTPUT_START, '').replaceAll(SYNCHRONIZED_OUTPUT_END, '')
               }
-              if (parkCursor && chunk && chunk !== SYNCHRONIZED_OUTPUT_START && chunk !== SYNCHRONIZED_OUTPUT_END) {
+              if (parkCursor && text && text !== SYNCHRONIZED_OUTPUT_START && text !== SYNCHRONIZED_OUTPUT_END) {
                 // A bottom-row cursor makes the terminal scroll before delivering a height resize.
                 // Both streams must resume from the last write to their shared terminal.
-                chunk = `${cursorSaved ? RESTORE_CURSOR : ''}${chunk}${SAVE_CURSOR}${CURSOR_HOME}`
+                // A chunk that ends with the cursor shown has just positioned it over the
+                // input box (IME composition support); keep it there instead of parking at
+                // the home position so terminal-rendered preedit stays inline.
+                const park = text.endsWith(SHOW_CURSOR) ? '' : CURSOR_HOME
+                chunk = `${cursorSaved ? RESTORE_CURSOR : ''}${text}${SAVE_CURSOR}${park}`
                 cursorSaved = true
               }
             }

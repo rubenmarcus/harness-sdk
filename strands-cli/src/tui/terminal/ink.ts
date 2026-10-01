@@ -131,6 +131,33 @@ const patches = new Map<string, [string, string][]>([
       ],
     ],
   ],
+  [
+    'log-update.js',
+    [
+      [
+        `    let previousLines = [];
+    let previousOutput = '';
+    let hasHiddenCursor = false;
+    let cursorPosition;
+    let cursorDirty = false;
+    let previousCursorPosition;
+    let cursorWasShown = false;
+    const getActiveCursor = () => (cursorDirty ? cursorPosition : undefined);`,
+        `    let previousLines = [];
+    let previousOutput = '';
+    let hasHiddenCursor = false;
+    let cursorPosition;
+    let cursorDirty = false;
+    let previousCursorPosition;
+    let cursorWasShown = false;
+    // Reuse the last committed cursor position when this frame does not set one, so
+    // renders driven by unrelated components (animations, transcript streaming)
+    // cannot hide or move the terminal cursor that carries IME composition text
+    // inside the input box.
+    const getActiveCursor = () => (cursorDirty ? cursorPosition : previousCursorPosition);`,
+      ],
+    ],
+  ],
 ])
 let targets: Map<string, [string, string][]>
 

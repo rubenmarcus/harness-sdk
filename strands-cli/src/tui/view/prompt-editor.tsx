@@ -1,4 +1,5 @@
-import type { ReactElement, ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
+import { measureElement, useCursor, useStdout, type DOMElement } from 'ink'
 import stringWidth from 'string-width'
 
 import {
@@ -61,15 +62,19 @@ export function PromptEditor({
   children?: ReactNode
 }): ReactElement {
   const theme = useTheme()
+  const { stdout } = useStdout()
+  const { setCursorPosition } = useCursor()
+  const cursorRowRef = useRef<DOMElement | null>(null)
+  const [cursorCell, setCursorCell] = useState<{ x: number; y: number } | undefined>()
   const status = busyStatus ?? panelStatus
   const height = promptEditorHeight(input, cursor, width, maxRows, Boolean(status && !children), party, maxHeight)
-  if (children || status) {
-    return (
-      <PromptSurface width={width} height={height} party={party} partyFrame={partyFrame}>
-        {children ?? <Text {...(busyStatus ? { color: theme.accent } : { dimColor: true })}>{status}</Text>}
-      </PromptSurface>
-    )
-  }
+  const editing = !children && !status
+  // Position the real terminal cursor at the editing position. Terminals render
+  // IME composition (preedit) text at the real cursor, so this keeps CJK
+  // composition inline in the input box instead of at the parked cursor.
+  const terminalCursor = editing && Boolean(stdout.isTTY)
+  setCursorPosition(terminalCursor ? cursorCell : undefined)
+
   const shellMode = input.startsWith('!')
   const promptPrefix = shellMode ? '◆ shell ' : ''
   const prefixWidth = stringWidth(promptPrefix)
@@ -80,25 +85,53 @@ export function PromptEditor({
     width - prefixWidth - PROMPT_PADDING_WIDTH,
     Math.max(1, Math.min(Math.max(MIN_PROMPT_ROWS, maxRows), height - (party ? 2 : 0)))
   )
+  const cursorRowIndex = rows.findIndex((row) => row.current !== undefined)
+  const cursorOffset = cursorRowIndex < 0 ? 0 : prefixWidth + stringWidth(rows[cursorRowIndex]!.before)
+
+  useEffect(() => {
+    if (!terminalCursor) {
+      setCursorCell(undefined)
+      return
+    }
+    const node = cursorRowRef.current
+    if (!node) {
+      return
+    }
+    const origin = measureElement(node)
+    if (origin.width === 0 && origin.height === 0) {
+      return
+    }
+    const next = { x: origin.x + cursorOffset, y: origin.y }
+    setCursorCell((current) => (current?.x === next.x && current?.y === next.y ? current : next))
+  })
+
+  if (children || status) {
+    return (
+      <PromptSurface width={width} height={height} party={party} partyFrame={partyFrame}>
+        {children ?? <Text {...(busyStatus ? { color: theme.accent } : { dimColor: true })}>{status}</Text>}
+      </PromptSurface>
+    )
+  }
   return (
     <PromptSurface width={width} height={height} party={party} partyFrame={partyFrame}>
       {input ? (
         rows.map((row, index) => (
-          <Box key={index} height={1} flexShrink={0}>
+          <Box key={index} height={1} flexShrink={0} {...(index === cursorRowIndex ? { ref: cursorRowRef } : {})}>
             <Text color={shellMode ? 'red' : theme.accent} bold>
               {index === 0 ? promptPrefix : continuationPrefix}
             </Text>
             <EditorRow
               row={row}
+              terminalCursor={terminalCursor}
               animateCursor={animateCursor}
               {...(actionableCommandToken ? { actionableCommandToken } : {})}
             />
           </Box>
         ))
       ) : (
-        <Box height={1} flexShrink={0}>
+        <Box height={1} flexShrink={0} ref={cursorRowRef}>
           <Text wrap="truncate-end">
-            <BlinkingCursor animate={animateCursor} />
+            {terminalCursor ? null : <BlinkingCursor animate={animateCursor} />}
             <Text dimColor>{promptPlaceholder(width - prefixWidth - PROMPT_PADDING_WIDTH - 1 - (party ? 2 : 0))}</Text>
           </Text>
         </Box>
@@ -217,10 +250,12 @@ function EditorRow({
   row,
   actionableCommandToken,
   animateCursor,
+  terminalCursor,
 }: {
   row: PromptViewportRow
   actionableCommandToken?: string
   animateCursor: boolean
+  terminalCursor: boolean
 }): ReactElement {
   const theme = useTheme()
   const fullRow = `${row.before}${row.current ?? ''}${row.after}`
@@ -234,7 +269,9 @@ function EditorRow({
     <Text wrap="truncate-end">
       {beforeHighlight ? <Text color={theme.accent}>{beforeHighlight}</Text> : null}
       {row.before.slice(token.length)}
-      {row.current === undefined ? null : (
+      {row.current === undefined ? null : terminalCursor ? (
+        <Text {...(currentOffset < token.length ? { color: theme.accent } : {})}>{row.current}</Text>
+      ) : (
         <BlinkingCursor
           character={row.current}
           animate={animateCursor}
