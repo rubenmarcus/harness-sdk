@@ -776,7 +776,7 @@ class TestRetrievalToolSearch:
         agent.sandbox = TestSandbox(str(tmp_path))
 
         payload = {f"key_{i}": "v" * 30 for i in range(20)}
-        payload["needle"] = "find me"
+        payload["needle"] = "こんにちは"
 
         @strands.tool
         def dict_tool() -> dict:
@@ -796,10 +796,10 @@ class TestRetrievalToolSearch:
         assert b"\n" in stored  # pretty-printed into multiple lines, not a single-line dump
 
         result = await plugin.retrieve_offloaded_content(
-            reference=ref, pattern="needle", context_lines=0, tool_context=tool_context
+            reference=ref, pattern="こんにちは", context_lines=0, tool_context=tool_context
         )
         assert "1 match" in result
-        assert '"needle": "find me"' in result
+        assert '"needle": "こんにちは"' in result
 
     @pytest.mark.asyncio
     async def test_raises_for_missing_reference(self, plugin, tool_context):

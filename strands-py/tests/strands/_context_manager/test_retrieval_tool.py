@@ -97,7 +97,7 @@ class TestRetrievalTool:
     async def test_searches_dict_tool_result_line_by_line(self, stash):
         """A dict returned by a @tool stashes as a json block and stays line-searchable."""
         payload = {f"key_{i}": "v" * 30 for i in range(20)}
-        payload["needle"] = "find me"
+        payload["needle"] = "こんにちは"
 
         @strands.tool
         def dict_tool() -> dict:
@@ -111,12 +111,12 @@ class TestRetrievalTool:
         ref = await stash.store("tool-1", 0, json.dumps(block).encode("utf-8"))
         tool = _create_retrieval_tool(stash, max_result_tokens=25)
         result = await tool._tool_func(
-            {"toolUseId": "t2", "input": {"reference": ref, "pattern": "needle", "context_lines": 0}}
+            {"toolUseId": "t2", "input": {"reference": ref, "pattern": "こんにちは", "context_lines": 0}}
         )
         assert result["status"] == "success"
         text = result["content"][0]["text"]
         assert "1 match" in text
-        assert '"needle": "find me"' in text
+        assert '"needle": "こんにちは"' in text
 
     @pytest.mark.asyncio
     async def test_searches_pydantic_null_tool_result(self, stash):

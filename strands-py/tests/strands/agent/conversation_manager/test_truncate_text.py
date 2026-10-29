@@ -43,7 +43,7 @@ class TestTruncateOversizedTextBlocks:
                         "toolResult": {
                             "toolUseId": "t1",
                             "status": "success",
-                            "content": [{"json": {"payload": "j" * 1_000}}],
+                            "content": [{"json": {"payload": "... [truncated: 100 chars removed] ..." + "j" * 1_000}}],
                         }
                     }
                 ],

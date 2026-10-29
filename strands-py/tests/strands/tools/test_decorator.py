@@ -1052,6 +1052,26 @@ async def test_tool_result_json_serialization_dict(alist):
 
 
 @pytest.mark.asyncio
+async def test_tool_result_json_serialization_dict_snapshots_mutable_result(alist):
+    """A tool result event does not retain caller-owned mutable state."""
+    shared = {"nested": {"value": "before"}}
+
+    @strands.tool
+    def dict_tool() -> dict:
+        """Returns shared mutable state."""
+        return shared
+
+    stream = dict_tool.stream({"toolUseId": "test-id", "input": {}}, {})
+    result = (await alist(stream))[-1]
+    content = result["tool_result"]["content"][0]
+
+    shared["nested"]["value"] = "after"
+    shared["added"] = True
+
+    assert content["json"] == {"nested": {"value": "before"}}
+
+
+@pytest.mark.asyncio
 async def test_tool_result_json_serialization_list(alist):
     """Test that list results are serialized as JSON."""
 

@@ -710,14 +710,14 @@ class DecoratedFunctionTool(AgentTool, Generic[P, R]):
         elif isinstance(result, BaseModel):
             try:
                 dumped_result = result.model_dump(mode="json")
-                json.dumps(dumped_result, ensure_ascii=False, allow_nan=False)
-                content = {"json": dumped_result}
+                serialized_result = json.dumps(dumped_result, ensure_ascii=False, allow_nan=False)
+                content = {"json": json.loads(serialized_result)}
             except (PydanticSerializationError, TypeError, ValueError):
                 content = {"text": str(result)}
         elif isinstance(result, dict):
             try:
-                json.dumps(result, ensure_ascii=False, allow_nan=False)
-                content = {"json": result}
+                serialized_result = json.dumps(result, ensure_ascii=False, allow_nan=False)
+                content = {"json": json.loads(serialized_result)}
             except (TypeError, ValueError):
                 content = {"text": str(result)}
         else:

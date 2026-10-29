@@ -29,13 +29,15 @@ def _truncate_block(block: Any, preserve_chars: int, minimum_removed_chars: int 
     """Replace one oversized text or JSON block with a head-and-tail text preview."""
     if "text" in block:
         text = block["text"]
+        was_truncated = bool(_TRUNCATION_MARKER.search(text))
     elif "json" in block:
         text = json.dumps(block["json"], ensure_ascii=False)
+        was_truncated = False
     else:
         return False
 
     removed = len(text) - 2 * preserve_chars
-    if removed <= minimum_removed_chars or _TRUNCATION_MARKER.search(text):
+    if removed <= minimum_removed_chars or was_truncated:
         return False
 
     marker = f"...\n\n... [truncated: {removed} chars removed] ...\n\n..."

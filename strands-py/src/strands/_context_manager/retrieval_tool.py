@@ -51,7 +51,7 @@ def _extract_text(data: object) -> str | None:
         if isinstance(text, str):
             return text
         if "json" in data:
-            return json.dumps(data["json"], indent=2)
+            return json.dumps(data["json"], indent=2, ensure_ascii=False)
     return None
 
 
