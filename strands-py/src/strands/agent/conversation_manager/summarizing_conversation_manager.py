@@ -11,6 +11,7 @@ from ...tools.registry import ToolRegistry
 from ...types.content import Message, _ensure_tracking_id
 from ...types.exceptions import ContextWindowOverflowException
 from ...types.tools import AgentTool
+from ..invocation_context import InvocationContext
 from .compression.context_compression import (
     DEFAULT_SUMMARIZATION_PROMPT,
     adjust_split_point_for_tool_pairs,
@@ -18,6 +19,7 @@ from .compression.context_compression import (
     generate_summary,
 )
 from .compression.pin_message import apply_pin_first, partition_pinned
+from .compression.truncate_text import _truncate_oversized_text_blocks
 from .conversation_manager import ConversationManager, ProactiveCompressionConfig
 
 if TYPE_CHECKING:
@@ -117,8 +119,12 @@ class SummarizingConversationManager(ConversationManager):
     def reduce_context(self, agent: "Agent", e: Exception | None = None, **kwargs: Any) -> None:
         """Reduce context using summarization.
 
-        When ``e`` is set (reactive overflow recovery), summarization failure is re-raised —
-        the agent loop must not proceed with an overflow.
+        When ``e`` is set (reactive overflow recovery) and summarization fails with a
+        ``ContextWindowOverflowException`` — too few messages to summarize, or the summary call itself
+        overflows — oversized text blocks in non-pinned messages are truncated to head+tail previews
+        instead; the failure is re-raised when nothing is left to truncate. Any other summarization
+        error (throttling, network) is re-raised untouched, since a retry may still succeed.
+        Truncation edits ``agent.messages`` only; a session store keeps the original content.
 
         When ``e`` is None (proactive compression), summarization failure is logged and
         returns silently — the model call proceeds regardless.
@@ -129,29 +135,44 @@ class SummarizingConversationManager(ConversationManager):
             e: The exception that triggered the context reduction, if any.
                 When set, this is a reactive overflow recovery call.
                 When None, this is a proactive compression call (best-effort).
-            **kwargs: Additional keyword arguments for future extensibility.
+            **kwargs: Additional keyword arguments for future extensibility, including the
+                ``invocation_context`` the summary call's usage adds to.
 
         Raises:
-            Exception: If summarization fails during reactive overflow recovery (e is set).
+            Exception: If summarization fails during reactive overflow recovery (e is set) for a
+                reason other than overflow, or no text block is left to truncate.
         """
         try:
-            self._summarize_oldest(agent)
+            self._summarize_oldest(agent, kwargs.get("invocation_context"))
         except Exception as summarization_error:
-            if e is not None:
-                # Reactive: rethrow so the ContextWindowOverflowException propagates
-                logger.error("Summarization failed: %s", summarization_error)
-                raise summarization_error from e
-            # Proactive: best-effort, swallow errors so the model call can still proceed.
-            logger.warning("Proactive summarization failed, continuing: %s", summarization_error)
+            if e is None:
+                # Proactive: best-effort, swallow errors so the model call can still proceed.
+                logger.warning("Proactive summarization failed, continuing: %s", summarization_error)
+                return
+            # Only an overflow proves summarization cannot shrink the context; anything else may pass on retry.
+            if isinstance(summarization_error, ContextWindowOverflowException) and _truncate_oversized_text_blocks(
+                agent.messages
+            ):
+                logger.warning(
+                    "error=<%s> | summarization could not reduce context, truncated oversized text blocks instead",
+                    summarization_error,
+                )
+                return
+            # Reactive: rethrow so the ContextWindowOverflowException propagates
+            logger.error("Summarization failed: %s", summarization_error)
+            raise summarization_error from e
 
-    def _summarize_oldest(self, agent: "Agent") -> None:
+    def _summarize_oldest(self, agent: "Agent", invocation_context: InvocationContext | None = None) -> None:
         """Summarize the oldest messages and replace them with a summary.
 
         Args:
             agent: The agent instance.
+            invocation_context: The request the summary call's usage adds to.
 
         Raises:
-            ContextWindowOverflowException: If there are insufficient messages for summarization.
+            ContextWindowOverflowException: If there are insufficient messages for summarization, or the
+                only message old enough to summarize is the previous summary (re-summarizing it would
+                not shrink the history, so the overflow would recur forever).
         """
         # Calculate how many messages to summarize
         messages_to_summarize_count = max(1, int(len(agent.messages) * self.summary_ratio))
@@ -182,24 +203,28 @@ class SummarizingConversationManager(ConversationManager):
 
         if not to_summarize:
             raise ContextWindowOverflowException("Cannot summarize: all messages in summarize range are pinned")
+        if to_summarize == [self._summary_message]:
+            raise ContextWindowOverflowException("Cannot summarize: only the previous summary is old enough")
 
         remaining_messages = agent.messages[messages_to_summarize_count:]
+
+        summary_message = self._generate_summary(to_summarize, agent, invocation_context)
+        # Assign tracking id to the summary message since it bypasses the append method.
+        _ensure_tracking_id(summary_message)
 
         # Keep track of the number of messages that have been summarized thus far.
         self.removed_message_count += len(to_summarize)
         # If there is a summary message, don't count it in the removed_message_count.
         if self._summary_message:
             self.removed_message_count -= 1
-
-        # Generate summary
-        self._summary_message = self._generate_summary(to_summarize, agent)
-        # Assign tracking id to the summary message since it bypasses the append method.
-        _ensure_tracking_id(self._summary_message)
+        self._summary_message = summary_message
 
         # Replace summarized range with protected messages + summary + remaining
         agent.messages[:] = protected_to_preserve + [self._summary_message] + remaining_messages
 
-    def _generate_summary(self, messages: list[Message], agent: "Agent") -> Message:
+    def _generate_summary(
+        self, messages: list[Message], agent: "Agent", invocation_context: InvocationContext | None = None
+    ) -> Message:
         """Generate a summary of the provided messages.
 
         When a dedicated summarization_agent was provided at init time, it is invoked as before
@@ -214,6 +239,7 @@ class SummarizingConversationManager(ConversationManager):
             messages: The messages to summarize.
             agent: The agent instance whose model will be used for summarization when no
                 dedicated summarization_agent was configured.
+            invocation_context: The request the summary call's usage adds to.
 
         Returns:
             A message containing the conversation summary.
@@ -222,19 +248,22 @@ class SummarizingConversationManager(ConversationManager):
             Exception: If summary generation fails.
         """
         if self.summarization_agent is not None:
-            return self._generate_summary_with_agent(messages)
+            return self._generate_summary_with_agent(messages, invocation_context)
 
-        return self._generate_summary_with_model(messages, agent)
+        return self._generate_summary_with_model(messages, agent, invocation_context)
 
     # ------------------------------------------------------------------
     # Path 1 – dedicated summarization agent (backward-compatible)
     # ------------------------------------------------------------------
 
-    def _generate_summary_with_agent(self, messages: list[Message]) -> Message:
+    def _generate_summary_with_agent(
+        self, messages: list[Message], invocation_context: InvocationContext | None = None
+    ) -> Message:
         """Generate a summary using the dedicated summarization agent.
 
         Args:
             messages: The messages to summarize.
+            invocation_context: The request the summary call's usage adds to.
 
         Returns:
             A message containing the conversation summary.
@@ -261,7 +290,10 @@ class SummarizingConversationManager(ConversationManager):
 
             summarization_agent.messages = messages
 
-            result = summarization_agent("Please summarize this conversation.")
+            invoke_kwargs: dict[str, Any] = (
+                {"invocation_context": invocation_context} if invocation_context is not None else {}
+            )
+            result = summarization_agent("Please summarize this conversation.", **invoke_kwargs)
             return as_user_summary(result.message)
 
         finally:
@@ -275,7 +307,9 @@ class SummarizingConversationManager(ConversationManager):
     # Path 2 – default case: call model.stream() directly
     # ------------------------------------------------------------------
 
-    def _generate_summary_with_model(self, messages: list[Message], agent: "Agent") -> Message:
+    def _generate_summary_with_model(
+        self, messages: list[Message], agent: "Agent", invocation_context: InvocationContext | None = None
+    ) -> Message:
         """Generate a summary by calling the agent's summarization model directly.
 
         This bypasses the full agent pipeline (lock, metrics, traces, tool loop) and
@@ -286,11 +320,14 @@ class SummarizingConversationManager(ConversationManager):
         Args:
             messages: The messages to summarize.
             agent: The parent agent. Summarizes with ``agent.aux_model`` > ``agent.model``.
+            invocation_context: The request the summary call's usage adds to.
 
         Returns:
             A message containing the conversation summary.
         """
-        return run_async(lambda: generate_summary(messages, agent.aux_model, self.summarization_system_prompt))
+        return run_async(
+            lambda: generate_summary(messages, agent.aux_model, self.summarization_system_prompt, invocation_context)
+        )
 
     def _adjust_split_point_for_tool_pairs(self, messages: list[Message], split_point: int) -> int:
         """Adjust the split point to avoid breaking ToolUse/ToolResult pairs.

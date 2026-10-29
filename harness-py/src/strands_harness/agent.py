@@ -125,13 +125,18 @@ def _web_search_mode(
         if isinstance(model, (Model, ModelRouter))
         else f"Model {model or defaults.DEFAULT_MODEL}"
     )
-    message = (
-        f"{target} has no native web search. Pass builtin_tools={{'web_search': 'exa'}} to search "
-        "through Exa (a third party), or drop 'web_search'."
-    )
     if explicit:
-        raise ValueError(message)
-    logger.warning(message)
+        raise ValueError(
+            f"{target} has no built-in web search. Pass builtin_tools={{'web_search': 'exa'}} to search "
+            "through Exa (a third party), or remove 'web_search' from builtin_tools. See https://strandsagents.com/docs/user-guide/harness/tools/web-access/#web_search"
+        )
+    # Info, not a warning: the user didn't ask for search, and nothing failed.
+    logger.info(
+        "%s has no built-in web search, so the web_search tool is disabled. To enable it through Exa "
+        "(a third party), pass builtin_tools={'web_search': 'exa'}. See %s",
+        target,
+        "https://strandsagents.com/docs/user-guide/harness/tools/web-access/#web_search",
+    )
     return None
 
 
@@ -303,7 +308,7 @@ def create_harness(
             {"transport": "direct"}}`` fetches from the harness process instead of running ``curl`` in the
             agent's sandbox (the default, ``"curl"``).
             ``web_search`` turns on the model provider's native web search (OpenAI, Anthropic, Google,
-            GPT-5/GPT-6 models on bedrock-mantle). Elsewhere (Bedrock Converse, other Mantle models,
+            GPT-5, GPT-6, and Daybreak models on bedrock-mantle). Elsewhere (Bedrock Converse, other Mantle models,
             ``Model`` instances) it is off, and naming it there raises. ``{"web_search": "exa"}``
             instead gives the model a ``web_search`` tool backed by Exa's hosted search on any model,
             a third party that receives the queries (keyless; ``EXA_API_KEY`` lifts its rate limit).
@@ -355,7 +360,7 @@ def create_harness(
             used verbatim; ``False``/``None`` disables skills. Filesystem sources are read through the
             agent's sandbox when there is one. An ``AgentSkills`` in ``plugins`` wins.
         memory: File-backed long-term memory, on by default. When enabled, the agent distills durable
-            facts into markdown files, searches them before each turn, and folds the top matches into
+            facts into markdown files, searches them before each user turn, and folds the top matches into
             context; persistence is independent of any session, so memory survives across sessions.
             ``True`` (or ``{}``) uses a file store under ``./.agent/memory``; ``{"dir": ...}`` moves it;
             ``{"stores": [...]}`` swaps in your own store(s) under the harness's memory policy (injection on,
