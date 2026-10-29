@@ -709,12 +709,14 @@ class DecoratedFunctionTool(AgentTool, Generic[P, R]):
             content = {"text": result}
         elif isinstance(result, BaseModel):
             try:
-                content = {"json": result.model_dump(mode="json")}
-            except PydanticSerializationError:
+                dumped_result = result.model_dump(mode="json")
+                json.dumps(dumped_result, ensure_ascii=False, allow_nan=False)
+                content = {"json": dumped_result}
+            except (PydanticSerializationError, TypeError, ValueError):
                 content = {"text": str(result)}
         elif isinstance(result, dict):
             try:
-                json.dumps(result, ensure_ascii=False)  # validate serializability
+                json.dumps(result, ensure_ascii=False, allow_nan=False)
                 content = {"json": result}
             except (TypeError, ValueError):
                 content = {"text": str(result)}

@@ -1166,6 +1166,25 @@ async def test_tool_result_dict_non_serializable_value_falls_back_to_text(alist)
 
 
 @pytest.mark.asyncio
+async def test_tool_result_dict_non_finite_value_falls_back_to_text(alist):
+    """Test that dicts containing non-finite numbers stay on the text path."""
+
+    @strands.tool
+    def dict_tool() -> dict:
+        """Returns a dict containing NaN."""
+        return {"score": float("nan")}
+
+    tool_use = {"toolUseId": "test-id", "input": {}}
+    stream = dict_tool.stream(tool_use, {})
+
+    result = (await alist(stream))[-1]
+    content = result["tool_result"]["content"][0]
+
+    assert content["text"] == "{'score': nan}"
+    assert "json" not in content
+
+
+@pytest.mark.asyncio
 async def test_tool_result_pydantic_dumps_native_types_as_json_scalars(alist):
     """Test that Pydantic results serialize native types (datetime, UUID) to JSON scalars."""
     import uuid
@@ -1189,6 +1208,29 @@ async def test_tool_result_pydantic_dumps_native_types_as_json_scalars(alist):
     content = result["tool_result"]["content"][0]
 
     assert content["json"] == {"when": "2026-01-02T03:04:05", "uid": "c2e4b5a0-1234-5678-9abc-def012345678"}
+
+
+@pytest.mark.asyncio
+async def test_tool_result_pydantic_non_finite_value_falls_back_to_text(alist):
+    """Test that Pydantic models containing non-finite numbers stay on the text path."""
+    from pydantic import BaseModel
+
+    class MyModel(BaseModel):
+        score: float
+
+    @strands.tool
+    def pydantic_tool() -> MyModel:
+        """Returns a Pydantic model containing NaN."""
+        return MyModel(score=float("nan"))
+
+    tool_use = {"toolUseId": "test-id", "input": {}}
+    stream = pydantic_tool.stream(tool_use, {})
+
+    result = (await alist(stream))[-1]
+    content = result["tool_result"]["content"][0]
+
+    assert content["text"] == "score=nan"
+    assert "json" not in content
 
 
 @pytest.mark.asyncio

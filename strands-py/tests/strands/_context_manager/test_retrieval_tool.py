@@ -119,6 +119,29 @@ class TestRetrievalTool:
         assert '"needle": "find me"' in text
 
     @pytest.mark.asyncio
+    async def test_searches_pydantic_null_tool_result(self, stash):
+        """A Pydantic null root remains searchable after the tool result is stashed."""
+        from pydantic import RootModel
+
+        @strands.tool
+        def null_tool() -> RootModel[None]:
+            """Returns a JSON null root."""
+            return RootModel[None](None)
+
+        stream = null_tool.stream({"toolUseId": "t1", "input": {}}, {})
+        wrapped = [event async for event in stream]
+        block = wrapped[-1]["tool_result"]["content"][0]
+        assert block == {"json": None}
+
+        ref = await stash.store("tool-1", 0, json.dumps(block).encode("utf-8"))
+        tool = _create_retrieval_tool(stash)
+        result = await tool._tool_func(
+            {"toolUseId": "t2", "input": {"reference": ref, "pattern": "null", "context_lines": 0}}
+        )
+        assert result["status"] == "success"
+        assert "1 match" in result["content"][0]["text"]
+
+    @pytest.mark.asyncio
     async def test_returns_error_for_non_text_content_with_pattern(self, stash):
         data = json.dumps({"image": {"format": "png", "source": "bytes"}}).encode("utf-8")
         ref = await stash.store("tool-1", 0, data)
