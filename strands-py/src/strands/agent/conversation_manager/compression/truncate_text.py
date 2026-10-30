@@ -3,7 +3,7 @@
 import json
 import re
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, cast
 
 from ....types.content import ContentBlock, Message, Messages
 from ....types.tools import ToolResultContent
@@ -25,19 +25,21 @@ def _text_blocks(message: Message) -> Iterator[ContentBlock | ToolResultContent]
                 yield item
 
 
+def _block_text(block: Any) -> str:
+    if "text" in block:
+        return cast(str, block["text"])
+    return json.dumps(block["json"], ensure_ascii=False)
+
+
+def _is_truncated(block: Any) -> bool:
+    return "text" in block and _TRUNCATION_MARKER.search(block["text"]) is not None
+
+
 def _truncate_block(block: Any, preserve_chars: int, minimum_removed_chars: int = 0) -> bool:
     """Replace one oversized text or JSON block with a head-and-tail text preview."""
-    if "text" in block:
-        text = block["text"]
-        was_truncated = bool(_TRUNCATION_MARKER.search(text))
-    elif "json" in block:
-        text = json.dumps(block["json"], ensure_ascii=False)
-        was_truncated = False
-    else:
-        return False
-
+    text = _block_text(block)
     removed = len(text) - 2 * preserve_chars
-    if removed <= minimum_removed_chars or was_truncated:
+    if removed <= minimum_removed_chars or _is_truncated(block):
         return False
 
     marker = f"...\n\n... [truncated: {removed} chars removed] ...\n\n..."
@@ -46,27 +48,37 @@ def _truncate_block(block: Any, preserve_chars: int, minimum_removed_chars: int 
     return True
 
 
-def _truncate_oversized_text_blocks(messages: Messages, preserve_chars: int = _PRESERVE_CHARS) -> bool:
-    """Replace every oversized, untruncated text or JSON block in non-pinned messages with a head+tail preview.
+def _truncate_largest_text_blocks(messages: Messages, budget: int = 1, preserve_chars: int = _PRESERVE_CHARS) -> int:
+    """Replace the largest untruncated text blocks in non-pinned messages with head+tail previews.
 
-    A block qualifies when truncating it saves more than ``preserve_chars`` characters, so each call
-    either shrinks the history by a meaningful amount or reports that nothing is left to truncate.
+    Up to ``budget`` blocks are truncated, largest first (ties go to the oldest). A block qualifies when
+    truncating it saves more than ``preserve_chars`` characters, so each call either shrinks the history
+    by a meaningful amount or reports that nothing is left.
 
     Args:
         messages: The conversation history, modified in place.
+        budget: Maximum number of blocks to truncate.
         preserve_chars: Characters kept at each end of a truncated block.
 
     Returns:
-        True if at least one block was truncated.
+        The number of blocks truncated.
     """
     if preserve_chars <= 0:
-        return False
+        return 0
 
-    truncated = False
-    for index, message in enumerate(messages):
-        if is_pinned(messages, index):
-            continue
-        for block in _text_blocks(message):
-            if _truncate_block(block, preserve_chars, minimum_removed_chars=preserve_chars):
-                truncated = True
+    candidates = sorted(
+        (
+            block
+            for index, message in enumerate(messages)
+            if not is_pinned(messages, index)
+            for block in _text_blocks(message)
+            if not _is_truncated(block)
+        ),
+        key=lambda block: len(_block_text(block)),
+        reverse=True,
+    )
+    truncated = 0
+    for block in candidates[:budget]:
+        if _truncate_block(block, preserve_chars, minimum_removed_chars=preserve_chars):
+            truncated += 1
     return truncated
