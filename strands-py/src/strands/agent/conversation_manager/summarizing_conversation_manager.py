@@ -94,16 +94,17 @@ class SummarizingConversationManager(ConversationManager):
     def register_hooks(self, registry: HookRegistry, **kwargs: Any) -> None:
         """Register hooks for agent lifecycle events.
 
-        Besides the base proactive-compression hook, resets the truncation budget once a model call ends
-        the run of consecutive overflows, so each overflow episode starts by truncating a single block again.
+        Besides the base proactive-compression hook, resets the overflow fallback state once a model call ends
+        the run of consecutive overflows, so the next episode retries summarization from a clean state.
         """
         super().register_hooks(registry, **kwargs)
-        registry.add_callback(AfterModelCallEvent, self._on_after_model_call_reset_budget)
+        registry.add_callback(AfterModelCallEvent, self._on_after_model_call_reset_overflow_state)
 
-    def _on_after_model_call_reset_budget(self, event: AfterModelCallEvent) -> None:
+    def _on_after_model_call_reset_overflow_state(self, event: AfterModelCallEvent) -> None:
         """End the overflow episode on any outcome other than a further overflow."""
         if not isinstance(event.exception, ContextWindowOverflowException):
             self._truncation_budget = 1
+            self._overflowed_range_fingerprint = None
 
     @override
     def restore_from_session(self, state: dict[str, Any]) -> list[Message] | None:
